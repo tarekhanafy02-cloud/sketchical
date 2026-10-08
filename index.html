@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Sketchbook</title>
+	<link rel="icon" href="favicon.ico">
+	<style>
+		html, body { margin: 0; height: 100%; background: #1e2327; }
+		#menu {
+			position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center;
+			background: radial-gradient(ellipse at 50% 30%, #2f4a63 0%, #1b2530 70%);
+			font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #fff;
+		}
+		#menu.hidden { display: none; }
+		.card { width: min(380px, 90vw); padding: 28px; border-radius: 14px; background: rgba(15, 20, 26, .78); box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+		.card h1 { margin: 0 0 4px; font-size: 32px; letter-spacing: .02em; }
+		.card p.sub { margin: 0 0 20px; opacity: .65; font-size: 14px; }
+		.card label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; opacity: .7; margin: 14px 0 6px; }
+		.card input {
+			width: 100%; box-sizing: border-box; padding: 11px 12px; font-size: 16px; border-radius: 8px;
+			border: 1px solid #3a4a5a; background: #121820; color: #fff; outline: none;
+		}
+		.card input:focus { border-color: #5fa8e8; }
+		#code { text-transform: uppercase; letter-spacing: .3em; text-align: center; font-weight: 700; }
+		.btn {
+			display: block; width: 100%; margin-top: 10px; padding: 12px; font-size: 16px; font-weight: 600;
+			border: 0; border-radius: 8px; cursor: pointer; color: #fff; background: #2d6cdf;
+		}
+		.btn:hover { background: #3f7df0; }
+		.btn.alt { background: #34424f; }
+		.btn.alt:hover { background: #435566; }
+		.btn.green { background: #2a8a57; }
+		.btn.green:hover { background: #34a56a; }
+		.row { display: flex; gap: 8px; }
+		.row .btn { margin-top: 0; }
+		#join-panel { display: none; margin-top: 14px; }
+		#join-panel.open { display: block; }
+		#error { color: #ff8a8a; font-size: 14px; min-height: 18px; margin-top: 12px; }
+		.hint { margin-top: 18px; font-size: 12px; opacity: .55; line-height: 1.5; }
+		#toast {
+			position: fixed; inset: 0; z-index: 2000; display: none; align-items: center; justify-content: center;
+			background: rgba(0,0,0,.6); font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #fff;
+		}
+		#toast.show { display: flex; }
+		#toast .card { text-align: center; }
+	</style>
+</head>
+
+<body>
+	<div id="menu">
+		<div class="card">
+			<h1>📒 Sketchbook</h1>
+			<p class="sub">3D sandbox &middot; walk, drive, fly &middot; with friends</p>
+
+			<label for="name">Your name</label>
+			<input id="name" maxlength="16" placeholder="Player" autocomplete="off">
+
+			<button class="btn" id="btn-solo">Solo Play</button>
+			<button class="btn green" id="btn-host">Host Game</button>
+			<button class="btn alt" id="btn-join-toggle">Join Game</button>
+
+			<div id="join-panel">
+				<label for="code">Room code</label>
+				<div class="row">
+					<input id="code" maxlength="5" placeholder="ABCDE" autocomplete="off">
+					<button class="btn" id="btn-join" style="width:110px">Join</button>
+				</div>
+			</div>
+			<div id="error"></div>
+			<div class="hint">
+				WASD move &middot; Shift run &middot; Space jump &middot; F/G enter vehicle &middot; Mouse look<br>
+				Host gives you a 5-letter room code to share. Anyone can switch scenarios from the right panel, and it changes for everyone.
+			</div>
+		</div>
+	</div>
+
+	<div id="toast"><div class="card"><h1 style="font-size:22px" id="toast-title"></h1><p class="sub" id="toast-msg"></p><button class="btn" id="toast-btn">Back to menu</button></div></div>
+
+	<script src="build/vendor/peerjs.min.js"></script>
+	<script src="build/sketchbook.min.js"></script>
+	<script>
+		(function () {
+			const $ = (id) => document.getElementById(id);
+			const nameInput = $('name'), codeInput = $('code'), errorEl = $('error');
+
+			try { nameInput.value = localStorage.getItem('sbk-name') || ''; } catch (e) {}
+
+			function playerName() {
+				const n = nameInput.value.trim().slice(0, 16) || ('Player' + Math.floor(Math.random() * 900 + 100));
+				try { localStorage.setItem('sbk-name', n); } catch (e) {}
+				return n;
+			}
+
+			function showToast(title, msg) {
+				$('toast-title').textContent = title;
+				$('toast-msg').textContent = msg;
+				$('toast').classList.add('show');
+				if (document.exitPointerLock) document.exitPointerLock();
+			}
+			$('toast-btn').onclick = () => { window.location.href = window.location.pathname; };
+
+			let inGame = false;
+			const menuButtons = ['btn-solo', 'btn-host', 'btn-join-toggle', 'btn-join'];
+			function setBusy(busy, msg) {
+				menuButtons.forEach((id) => { $(id).disabled = busy; $(id).style.opacity = busy ? .5 : 1; });
+				errorEl.style.color = busy ? '#9ecbff' : '#ff8a8a';
+				errorEl.textContent = msg || '';
+			}
+
+			function startWorld() {
+				inGame = true;
+				$('menu').classList.add('hidden');
+				return new Sketchbook.World('build/assets/world.glb');
+			}
+
+			// Multiplayer connects first; the 3D world is only created once the room is reachable,
+			// so a bad code or a full room simply leaves you on this menu.
+			function startMultiplayer(opts) {
+				setBusy(true, opts.mode === 'host' ? 'Creating room…' : 'Joining room…');
+				const mp = new Sketchbook.Multiplayer(Object.assign({
+					onReady: () => { mp.attach(startWorld()); },
+					onError: (m) => { inGame ? showToast('Connection problem', m) : setBusy(false, m); },
+					onDisconnect: (m) => { inGame ? showToast('Disconnected', m) : setBusy(false, m); }
+				}, opts));
+			}
+
+			$('btn-solo').onclick = () => { startWorld(); };
+			$('btn-host').onclick = () => startMultiplayer({ mode: 'host', name: playerName() });
+			$('btn-join-toggle').onclick = () => { $('join-panel').classList.toggle('open'); codeInput.focus(); };
+
+			function join() {
+				const code = codeInput.value.trim().toUpperCase();
+				if (code.length !== 5) { errorEl.textContent = 'Enter the 5-letter room code.'; return; }
+				startMultiplayer({ mode: 'join', name: playerName(), roomCode: code });
+			}
+			$('btn-join').onclick = join;
+			codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+
+			// Invite link: ?room=ABCDE
+			const room = new URLSearchParams(window.location.search).get('room');
+			if (room) {
+				codeInput.value = room.slice(0, 5).toUpperCase();
+				$('join-panel').classList.add('open');
+			}
+		})();
+	</script>
+</body>
+
+</html>
